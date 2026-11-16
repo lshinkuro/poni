@@ -9,9 +9,11 @@ enum LangWindow {
 struct LangPage: View {
     @ObservedObject var m = LangModel.shared
     var windowed = false
-    @AppStorage("langMode") private var mode = 0 // 0 kosakata, 1 kuis, 2 tes, 3 ngobrol, 4 progres, 5 pengaturan, 6 kesalahan, 7 daftar
+    @AppStorage("langMode") private var mode = 0 // 0 kosakata, 1 kuis, 2 tes, 3 ngobrol, 4 progres, 5 pengaturan, 6 kesalahan, 7 daftar, 8 grammar
     @AppStorage("langQuiz") private var quizKind = 0 // 0 pilihan ganda, 1 ketik, 2 dengar
     @AppStorage("langVoice") private var voiceMode = false
+    @AppStorage("langTestKind") private var testKind = 0 // LangModel.testKinds
+    @AppStorage("langLevel") private var testLevel = 1  // LangModel.levels
     @StateObject private var voice = VoiceChat()
     @Local private var input = ""
     @Local private var choosingLang = false
@@ -21,10 +23,11 @@ struct LangPage: View {
     @Local private var meaningField = ""
     @Local private var exampleField = ""
     @Local private var search = ""
+    @Local private var tipOpen = false
     @FocusState private var typing: Bool
 
     var tabs: [(id: Int, title: String)] {
-        [(0, "Kosakata"), (1, "Kuis"), (2, m.testName), (3, "Ngobrol"), (6, "Kesalahan"), (7, "Daftar"), (4, "Progres"), (5, "⚙︎")]
+        [(0, "Kosakata"), (1, "Kuis"), (8, "Grammar"), (2, m.testName), (3, "Ngobrol"), (6, "Kesalahan"), (7, "Daftar"), (4, "Progres"), (5, "⚙︎")]
     }
     var wordSize: CGFloat { windowed ? 56 : 34 }
 
@@ -33,6 +36,7 @@ struct LangPage: View {
             header
             switch mode {
             case 2: test
+            case 8: grammar
             case 3: talk
             case 4: progress
             case 5: settings
@@ -54,8 +58,13 @@ struct LangPage: View {
         .onAppear { if m.current == nil { m.next() } }
         .onDisappear { voice.stop() }
         .onChange(of: m.current) { _ in sayIfListening() }
+        .onChange(of: m.qIndex) { _ in playTalk() }
+        .onChange(of: m.questions) { _ in playTalk() }
     }
 
+    /// Lessons, essays and exams need more room than the notch has, so they move to the big window (same model, same tab).
+    func roomy() { if !windowed { LangWindow.show() } }
+    func playTalk() { if mode == 2, m.qIndex < m.questions.count, !m.questions[m.qIndex].listen.isEmpty { m.speak(m.questions[m.qIndex].listen) } }
     func sayIfListening() { if mode == 1, quizKind == 2, let w = m.current { m.speak(w.word) } }
 
     // MARK: Header
@@ -419,9 +428,13 @@ struct LangPage: View {
                 VStack(spacing: 8) {
                     Image(systemName: "graduationcap.fill").font(.system(size: 28)).foregroundStyle(Palette.accent)
                     Text(String(format: tr("Latihan soal %@"), m.testName)).font(.system(size: 15, weight: .semibold))
-                    Text(String(format: tr("5 soal pilihan ganda dibuat oleh %@, lengkap dengan pembahasan. Skornya tersimpan di Progres."), m.engineName))
+                    Text(String(format: tr("Soal baru dibuat oleh %@ tiap kali, lengkap dengan pembahasan. Skornya tersimpan di Progres."), m.engineName))
                         .font(.system(size: 11)).foregroundStyle(.gray).multilineTextAlignment(.center).frame(maxWidth: 380)
-                    NButton(icon: m.busy ? "hourglass" : "play.fill", title: m.busy ? "Membuat soal…" : "Mulai tes", tint: Palette.accent, prominent: true) { m.startTest() }
+                    HStack(spacing: 4) { ForEach(LangModel.testKinds.indices, id: \.self) { i in pill(LangModel.testKinds[i], on: testKind == i) { testKind = i } } }
+                    HStack(spacing: 4) { ForEach(LangModel.levels.indices, id: \.self) { i in pill(LangModel.levels[i], on: testLevel == i) { testLevel = i } } }
+                    Text(tr(["5 soal pilihan ganda", "5 soal: dengarkan lalu jawab", "3 soal menulis, dinilai AI", "10 soal campuran: pilihan ganda, listening, essay"][testKind]))
+                        .font(.system(size: 10)).foregroundStyle(.gray)
+                    NButton(icon: m.busy ? "hourglass" : "play.fill", title: m.busy ? "Membuat soal…" : "Mulai tes", tint: Palette.accent, prominent: true) { if testKind >= 2 { roomy() }; m.startTest(kind: testKind, level: testLevel) }
                         .disabled(m.busy || m.genStatus != nil)
                     if let why = m.genStatus { Text(tr(why)).font(.system(size: 10)).foregroundStyle(Palette.amber) }
                 }
@@ -433,7 +446,8 @@ struct LangPage: View {
                     Text(m.score == m.questions.count ? "Sempurna! 🎉" : m.score * 2 >= m.questions.count ? "Bagus, terus latihan 💪" : "Ayo coba lagi, pelan-pelan 🙂")
                         .font(.system(size: 13, weight: .bold))
                     HStack {
-                        NButton(icon: "arrow.clockwise", title: "Tes lagi", tint: Palette.accent, prominent: true) { m.startTest() }.disabled(m.busy)
+                        NButton(icon: "arrow.clockwise", title: "Tes lagi", tint: Palette.accent, prominent: true) { if testKind >= 2 { roomy() }; m.startTest(kind: testKind, level: testLevel) }.disabled(m.busy)
+                        NButton(icon: "slider.horizontal.3", title: "Ganti jenis") { m.questions = [] }
                         NButton(icon: "chart.bar.fill", title: "Lihat progres") { mode = 4 }
                     }
                 }
@@ -444,15 +458,34 @@ struct LangPage: View {
                 NCard(padding: 14, glow: true) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("SOAL \(m.qIndex + 1)/\(m.questions.count) · skor \(m.score)").font(.system(size: 10, weight: .bold)).foregroundStyle(.gray)
+                        if !q.listen.isEmpty {
+                            HStack(spacing: 8) {
+                                NButton(icon: "play.fill", title: "Putar", tint: Palette.accent, prominent: true) { m.speak(q.listen) }
+                                if m.chosen == nil { Text("Dengarkan, teksnya muncul setelah menjawab").font(.system(size: 10)).foregroundStyle(.gray) }
+                            }
+                            if m.chosen != nil { Text("🎧 \(q.listen)").font(.system(size: 11)).foregroundStyle(.gray).fixedSize(horizontal: false, vertical: true) }
+                        }
                         Text(q.q).font(.system(size: 13, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 0)
-                        if m.chosen != nil, !q.why.isEmpty {
+                        if let g = m.grade {
+                            Text("\(g.score)/10 · \(g.feedback)").font(.system(size: 11)).foregroundStyle(g.score >= 6 ? Palette.green : Palette.amber).lineLimit(5)
+                            if !g.better.isEmpty { Text("✏️ \(g.better)").font(.system(size: 11)).lineLimit(5) }
+                        } else if m.chosen != nil, !q.why.isEmpty {
                             Text("💡 \(q.why)").font(.system(size: 11)).foregroundStyle(Palette.amber).lineLimit(4)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 VStack(spacing: 5) {
+                    if q.isEssay {
+                        TextEditor(text: $m.essay).font(.system(size: 12)).scrollContentBackground(.hidden).padding(6)
+                            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .disabled(m.chosen != nil)
+                        if m.chosen == nil {
+                            NButton(icon: m.busy ? "hourglass" : "checkmark", title: m.busy ? "Menilai…" : "Nilai", tint: Palette.accent, prominent: true) { m.submitEssay() }
+                                .disabled(m.busy || m.essay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
                     ForEach(Array(q.options.enumerated()), id: \.offset) { i, o in
                         choice(["A", "B", "C", "D"][i], o, state: m.chosen == nil ? nil : i == q.answer ? true : m.chosen == i ? false : nil) { m.choose(i) }
                     }
@@ -464,6 +497,195 @@ struct LangPage: View {
                 .frame(width: 250)
             }
         }
+    }
+
+    // MARK: Grammar
+
+    @ViewBuilder var grammar: some View {
+        if m.lesson == nil { grammarPath } else { lessonView }
+    }
+
+    var grammarPath: some View {
+        VStack(spacing: 6) {
+            HStack {
+                heading(String(format: tr("JALUR GRAMMAR · %@/%@ SELESAI"), "\(m.s.lang.grammar.indices.filter { m.lessonDone($0) > 0 }.count)", "\(m.s.lang.grammar.count)"))
+                Text("⚡ \(m.s.xp[m.s.lang.rawValue] ?? 0) XP").font(.system(size: 10, weight: .bold)).foregroundStyle(Palette.amber)
+                Spacer()
+                if m.busy { Text("Membuat pelajaran…").font(.system(size: 10)).foregroundStyle(Palette.accent) }
+                else if let why = m.genStatus { Text(tr(why)).font(.system(size: 10)).foregroundStyle(Palette.amber).lineLimit(1) }
+            }
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(m.s.lang.grammar.indices, id: \.self) { i in lessonNode(i).offset(x: [0, 50, 75, 50, 0, -50, -75, -50][i % 8]) }
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 8)
+            }
+        }
+    }
+
+    func lessonNode(_ i: Int) -> some View {
+        let done = m.lessonDone(i), open = m.lessonOpen(i)
+        return Button { roomy(); m.startLesson(i) } label: {
+            VStack(spacing: 3) {
+                ZStack {
+                    Circle().fill(done > 0 ? Palette.accent : Color.white.opacity(open ? 0.12 : 0.05))
+                    Circle().strokeBorder(open && done == 0 ? Palette.accent : .clear, lineWidth: 3)
+                    Image(systemName: done > 0 ? "checkmark" : open ? "star.fill" : "lock.fill")
+                        .font(.system(size: 18, weight: .bold)).foregroundStyle(done > 0 ? Palette.onAccent : open ? Palette.accent : .gray)
+                }
+                .frame(width: 50, height: 50)
+                Text(m.s.lang.grammar[i]).font(.system(size: 10, weight: .semibold)).foregroundStyle(open ? .white : .gray).lineLimit(1).fixedSize()
+                if done > 0 { Text(String(repeating: "👑", count: min(done, 5))).font(.system(size: 8)) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!open || m.busy || m.genStatus != nil)
+        .tip(open ? "Mulai pelajaran" : "Selesaikan pelajaran sebelumnya dulu")
+    }
+
+    @ViewBuilder var lessonView: some View {
+        let i = m.lesson ?? 0
+        HStack(spacing: 8) {
+            NButton(icon: "xmark") { m.quitLesson() }.tip("Kembali ke jalur")
+            ProgressView(value: Double(min(m.dIndex, m.drills.count)), total: Double(max(m.drills.count, 1))).tint(Palette.accent)
+            Text(m.s.lang.grammar[i]).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
+            HStack(spacing: 1) {
+                ForEach(0..<LangModel.maxHearts, id: \.self) { h in
+                    Image(systemName: h < m.hearts ? "heart.fill" : "heart").font(.system(size: 11)).foregroundStyle(h < m.hearts ? Palette.red : .gray)
+                }
+            }
+            .accessibilityLabel(String(format: tr("%@ nyawa"), "\(m.hearts)"))
+        }
+        if m.lessonFailed {
+            stage {
+                VStack(spacing: 8) {
+                    Text("💔").font(.system(size: 40))
+                    Text("Nyawa habis").font(.system(size: 15, weight: .semibold))
+                    Text("Baca lagi tipsnya, lalu coba dari awal. Soalnya akan baru.").font(.system(size: 11)).foregroundStyle(.gray)
+                    HStack {
+                        NButton(icon: "arrow.clockwise", title: m.busy ? "Membuat pelajaran…" : "Coba lagi", tint: Palette.accent, prominent: true) { m.startLesson(i) }.disabled(m.busy)
+                        NButton(icon: "map.fill", title: "Jalur") { m.quitLesson() }
+                    }
+                }
+            }
+        } else if m.dIndex >= m.drills.count {
+            stage {
+                VStack(spacing: 8) {
+                    Text("🎉").font(.system(size: 40))
+                    Text("Pelajaran selesai!").font(.system(size: 15, weight: .semibold))
+                    Text("+\(m.gainedXP) XP").font(.system(size: 20, weight: .bold)).foregroundStyle(Palette.amber)
+                    Text(m.drillsWrong == 0 ? "Sempurna, tanpa salah!" : "\(m.drillsWrong) salah, sudah diulang sampai benar")
+                        .font(.system(size: 11)).foregroundStyle(.gray)
+                    HStack {
+                        if i + 1 < m.s.lang.grammar.count {
+                            NButton(icon: "arrow.right", title: m.busy ? "Membuat pelajaran…" : "Pelajaran berikutnya", tint: Palette.accent, prominent: true) { m.startLesson(i + 1) }.disabled(m.busy)
+                        }
+                        NButton(icon: "arrow.clockwise", title: "Ulangi") { m.startLesson(i) }.disabled(m.busy)
+                        NButton(icon: "map.fill", title: "Jalur") { m.quitLesson() }
+                    }
+                }
+            }
+        } else {
+            if !m.tip.isEmpty {
+                // One line by default: the notch is too short for the tip and four options.
+                Button { withAnimation(Motion.snap) { tipOpen.toggle() } } label: {
+                    HStack(alignment: .top, spacing: 4) {
+                        Text("💡 \(m.tip)").font(.system(size: 11)).foregroundStyle(Palette.amber).lineLimit(tipOpen ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: tipOpen)
+                        Spacer(minLength: 0)
+                        Image(systemName: tipOpen ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .bold)).foregroundStyle(.gray)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).tip(tipOpen ? "Tutup tips" : "Baca tips")
+            }
+            switch m.drills[m.dIndex] {
+            case .choice(let q):
+                HStack(alignment: .top, spacing: 10) {
+                    NCard(padding: 14, glow: true) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            heading(tr("PILIH JAWABAN YANG BENAR"))
+                            Text(q.q).font(.system(size: 14, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
+                            if m.drillResult != nil, !q.why.isEmpty { Text("💡 \(q.why)").font(.system(size: 11)).foregroundStyle(Palette.amber).lineLimit(3) }
+                            HStack { Spacer(); drillContinue }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                    VStack(spacing: 5) {
+                        ForEach(Array(q.options.enumerated()), id: \.offset) { j, o in
+                            choice(["A", "B", "C", "D"][j], o, state: m.drillResult == nil ? nil : j == q.answer ? true : m.drillPick == j ? false : nil) { m.pickDrill(j) }
+                        }
+                    }
+                    .frame(width: 250)
+                }
+            case .arrange(let prompt, let answer):
+                NCard(padding: 14, glow: true) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        heading(tr("SUSUN KALIMAT INI"))
+                        Text(prompt).font(.system(size: 14, weight: .semibold))
+                        Flow(spacing: 5) { ForEach(m.built, id: \.self) { t in tile(t) } }
+                            .frame(maxWidth: .infinity, minHeight: 34, alignment: .topLeading)
+                            .overlay(alignment: .bottom) { Rectangle().fill(Color.white.opacity(0.15)).frame(height: 1) }
+                        Flow(spacing: 5) { ForEach(m.tiles.indices.filter { !m.built.contains($0) }, id: \.self) { t in tile(t) } }
+                        Spacer(minLength: 0)
+                        if m.drillResult == false { Text("✏️ \(answer)").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.amber) }
+                        HStack {
+                            Spacer()
+                            if m.drillResult == nil {
+                                NButton(icon: "checkmark", title: "Cek", tint: Palette.accent, prominent: true) { m.checkArrange() }.disabled(m.built.isEmpty)
+                            }
+                            drillContinue
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            case .type(let prompt, let answers):
+                NCard(padding: 14, glow: true) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        heading(tr("TERJEMAHKAN KALIMAT INI"))
+                        Text(prompt).font(.system(size: 14, weight: .semibold))
+                        TextField(tr(m.s.lang.placeholder), text: $m.drillText).textFieldStyle(.plain).font(.system(size: 14))
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .focused($typing).disabled(m.drillResult != nil)
+                            .onSubmit { if m.drillResult == nil { m.checkTyped() } else { m.nextDrill() } }
+                            .onAppear { typing = true }
+                        Spacer(minLength: 0)
+                        if m.drillResult == false { Text("✏️ \(answers[0])").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.amber) }
+                        HStack {
+                            Spacer()
+                            if m.drillResult == nil {
+                                NButton(icon: "checkmark", title: "Cek", tint: Palette.accent, prominent: true) { m.checkTyped() }
+                                    .disabled(m.drillText.trimmingCharacters(in: .whitespaces).isEmpty)
+                            }
+                            drillContinue
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder var drillContinue: some View {
+        if let right = m.drillResult {
+            HStack(spacing: 8) {
+                Text(right ? "Benar! 🎉" : "Belum tepat, nanti diulang").font(.system(size: 11, weight: .bold)).foregroundStyle(right ? Palette.green : Palette.red)
+                NButton(icon: "arrow.right", title: "Lanjut", tint: Palette.accent, prominent: true) { m.nextDrill() }
+            }
+        }
+    }
+
+    func tile(_ i: Int) -> some View {
+        Button { m.tapTile(i) } label: {
+            Text(m.tiles[i]).font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Color.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Ngobrol
@@ -486,6 +708,17 @@ struct LangPage: View {
                 if voiceMode { voiceView } else { chatView }
             }
         }
+    }
+
+    func pill(_ title: String, on: Bool, _ run: @escaping () -> Void) -> some View {
+        Button(action: run) {
+            Text(tr(title)).font(.system(size: 11, weight: .semibold)).lineLimit(1).fixedSize()
+                .foregroundStyle(on ? Palette.onAccent : .gray)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(on ? Palette.accent : Color.white.opacity(0.05), in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     func scenarioChip(_ title: String, _ icon: String, _ i: Int?) -> some View {
@@ -862,5 +1095,37 @@ struct LangPage: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Lays its children out in rows, wrapping to the next row when one is full (word tiles).
+struct Flow: Layout {
+    var spacing: CGFloat = 5
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let rows = arrange(subviews, width: proposal.width ?? .infinity)
+        return CGSize(width: rows.map(\.maxX).max() ?? 0, height: rows.last.map { $0.y + $0.height } ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for row in arrange(subviews, width: bounds.width) {
+            for (i, x) in row.items { subviews[i].place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + row.y), proposal: .unspecified) }
+        }
+    }
+
+    private func arrange(_ subviews: Subviews, width: CGFloat) -> [(items: [(Int, CGFloat)], y: CGFloat, height: CGFloat, maxX: CGFloat)] {
+        var rows: [(items: [(Int, CGFloat)], y: CGFloat, height: CGFloat, maxX: CGFloat)] = [([], 0, 0, 0)]
+        for (i, v) in subviews.enumerated() {
+            let size = v.sizeThatFits(.unspecified)
+            var row = rows.removeLast()
+            if !row.items.isEmpty, row.maxX + spacing + size.width > width {
+                rows.append(row)
+                row = ([], row.y + row.height + spacing, 0, 0)
+            }
+            let x = row.items.isEmpty ? 0 : row.maxX + spacing
+            row.items.append((i, x)); row.height = max(row.height, size.height); row.maxX = x + size.width
+            rows.append(row)
+        }
+        return rows
     }
 }

@@ -270,6 +270,19 @@ func selfTest() {
     let pq = parseQuestions("Here you go:\n\nQ: She ____ to work yesterday.\nA) go\nB) **went**\nC) goes\nD) going\nANSWER: B\nWHY: Lampau.\n\nQ: broken\nA) x\nANSWER: A\n\nq: The data ____ clear.\nA) is\nB) are\nC) be\nD) been\nAnswer: a\nWhy: Uncountable.")
     assert(pq == [Question(q: "She ____ to work yesterday.", options: ["go", "went", "goes", "going"], answer: 1, why: "Lampau."),
                   Question(q: "The data ____ clear.", options: ["is", "are", "be", "been"], answer: 0, why: "Uncountable.")], "test questions")
+    let pq2 = parseQuestions("TALK: Man: Is the library open? Woman: Until nine.\nQ: When does it close?\nA) 7\nB) 8\nC) 9\nD) 10\nANSWER: C\nWHY: Sembilan.\n\nQ: Describe your city.\nWHY: Sebut lokasi.\n\nTALK: orphan\nQ: no options")
+    assert(pq2 == [Question(q: "When does it close?", options: ["7", "8", "9", "10"], answer: 2, why: "Sembilan.", listen: "Man: Is the library open? Woman: Until nine."),
+                   Question(q: "Describe your city.", options: [], answer: -1, why: "Sebut lokasi.")] && pq2[1].isEssay, "listening and essay questions")
+    let pl = parseLesson("TIP: Pakai -s untuk he/she.\nQ: She ____ tea.\nA) drink\nB) drinks\nC) drinking\nD) drank\nANSWER: B\nWHY: Orang ketiga.\nARRANGE: Dia minum teh. | She drinks tea every day.\nARRANGE: bad line\nARRANGE: Satu | one")
+    assert(pl.tip == "Pakai -s untuk he/she." && pl.drills == [.choice(Question(q: "She ____ tea.", options: ["drink", "drinks", "drinking", "drank"], answer: 1, why: "Orang ketiga.")),
+                                                             .arrange(prompt: "Dia minum teh.", answer: "She drinks tea every day.")], "grammar lesson")
+    assert(arrangedCorrect(["she", "drinks", "tea", "every", "day."], "She drinks tea every day.") && !arrangedCorrect(["tea", "she", "drinks"], "She drinks tea."), "arranged sentence")
+    assert(parseLesson("TYPE: Aku tidak tahu. | I don't know. | I do not know.\nTYPE: kosong |").drills == [.type(prompt: "Aku tidak tahu.", answers: ["I don't know.", "I do not know."])], "type drill")
+    assert(translationCorrect(" i  DO not know ", ["I don't know.", "I do not know."]) && translationCorrect("I don’t know", ["I don't know."]) && !translationCorrect("I know", ["I don't know."]) && !translationCorrect("", ["x"]), "typed translation")
+    assert(translationCorrect("Él está cansado", ["el esta cansado."]) && translationCorrect("watashi wa gakusei desu", ["わたし は がくせい です", "watashi wa gakusei desu"]), "typed translation es/ja")
+    assert(Lang.allCases.allSatisfy { $0.grammar.count >= 12 }, "every language has a grammar path")
+    let pg = parseGrade("**SCORE:** 7/10\nFEEDBACK: Bagus.\nBETTER: I live in Bandung.")
+    assert(pg?.score == 7 && pg?.feedback == "Bagus." && pg?.better == "I live in Bandung." && parseGrade("nothing") == nil, "essay grade")
     let oldLang = try! JSONDecoder().decode(LangState.self, from: Data(#"{"lang":"es","target":15,"cards":{"es:hola":{"box":2,"due":0}},"log":{"2026-11-07":3},"custom":{}}"#.utf8))
     assert(oldLang.lang == .es && oldLang.target == 15 && oldLang.cards["es:hola"]?.box == 2 && oldLang.engine == "apple" && oldLang.tests.isEmpty, "old lang.json keeps progress")
     assert(isNewer("0.6.10", than: "0.6.9") && isNewer("v0.7.0", than: "0.6.9") && isNewer("1.0", than: "0.9.9"), "newer versions")
