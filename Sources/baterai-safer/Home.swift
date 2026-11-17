@@ -221,33 +221,33 @@ struct HomeView: View {
         } else {
             // Like the medium Calendar widget: the month beside today's events. Four equal cards are too narrow for it.
             if calStyle == "month" {
-                miniMonth.frame(maxWidth: .infinity)
+                miniMonth(scale: 1.3).frame(maxWidth: .infinity) // alone it gets the room; six-week months still fit the card's height
             } else if calStyle == "both", shown.count != 4 {
-                HStack(alignment: .top, spacing: 8) { agenda(compact: true); miniMonth }
+                HStack(alignment: .top, spacing: 8) { agenda(compact: true); miniMonth() }
             } else {
                 agenda(compact: false)
             }
         }
     }
 
-    var miniMonth: some View {
+    func miniMonth(scale k: CGFloat = 1) -> some View {
         var cal = Calendar.current
         cal.locale = appLocale
         cal.firstWeekday = Calendar.current.firstWeekday
         let symbols = cal.veryShortStandaloneWeekdaySymbols, now = Date()
         return VStack(alignment: .leading, spacing: 4) {
             Text(now.formatted(.dateTime.month(.wide).locale(appLocale)).uppercased())
-                .font(.system(size: 9, weight: .bold)).tracking(0.6).foregroundStyle(Palette.accent)
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(15), spacing: 0), count: 7), spacing: 2) {
+                .font(.system(size: 9 * k, weight: .bold)).tracking(0.6).foregroundStyle(Palette.accent)
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(15 * k), spacing: 0), count: 7), spacing: 2 * k) {
                 ForEach(-7..<0, id: \.self) { i in // negative ids so they don't collide with the day cells' offsets
-                    Text(symbols[(cal.firstWeekday + 6 + i) % 7]).font(.system(size: 8, weight: .semibold)).foregroundStyle(.white.opacity(0.35))
+                    Text(symbols[(cal.firstWeekday + 6 + i) % 7]).font(.system(size: 8 * k, weight: .semibold)).foregroundStyle(.white.opacity(0.35))
                 }
                 ForEach(Array(monthGrid(now).enumerated()), id: \.offset) { _, day in
                     let today = day.map { cal.isDateInToday($0) } ?? false
                     Text(day.map { "\(cal.component(.day, from: $0))" } ?? "")
-                        .font(.system(size: 9, weight: today ? .bold : .medium)).monospacedDigit()
+                        .font(.system(size: 9 * k, weight: today ? .bold : .medium)).monospacedDigit()
                         .foregroundStyle(today ? Palette.onAccent : .white.opacity(0.8))
-                        .frame(width: 15, height: 14)
+                        .frame(width: 15 * k, height: 14 * k)
                         .background { if today { Circle().fill(Palette.accentFill) } }
                 }
             }
