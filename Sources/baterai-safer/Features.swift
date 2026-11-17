@@ -67,7 +67,8 @@ final class NowPlaying: ObservableObject {
     private var stream: Process?
     private var info: [String: Any] = [:]
     private var adapterFailed = false
-    private var viaAdapter: Bool { stream != nil }
+    // While another app holds Now Playing and a music player is open, the timer polls the player instead.
+    private var viaAdapter: Bool { stream != nil && timer == nil }
 
     func start() {
         if Self.adapter != nil, !adapterFailed {
@@ -124,15 +125,29 @@ final class NowPlaying: ObservableObject {
     }
 
     private func applyStream(_ line: Data) {
-        guard viaAdapter, let j = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+        guard stream != nil, let j = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let payload = j["payload"] as? [String: Any] else { return }
         let diff = j["diff"] as? Bool ?? false
         info = mergeNowPlaying(info, payload, diff: diff)
+        show(artwork: !diff || payload.keys.contains("artworkData"))
+    }
+
+    private func show(artwork newArt: Bool) {
         // Safari and Poni's own floating video play in WebKit's GPU process; the parent is the app that owns it.
         guard let t = info["title"] as? String, let id = info["parentApplicationBundleIdentifier"] as? String ?? info["bundleIdentifier"] as? String else {
             if app != nil { app = nil; playing = false; artwork = nil; lyrics = []; trackKey = "" }
             return
         }
+        // A WhatsApp voice note or a YouTube tab mustn't take over while a music player is open.
+        if !Self.players.contains(where: { $0.0 == id }), Self.players.contains(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.0).isEmpty }) {
+            if timer == nil {
+                title = ""; trackKey = ""
+                timer = .scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.poll() }
+                poll()
+            }
+            return
+        }
+        timer?.invalidate(); timer = nil
         let pid = (info["processIdentifier"] as? Int).flatMap { NSRunningApplication(processIdentifier: pid_t($0)) }
         bundleID = id
         app = isFloating ? "Poni"
@@ -152,7 +167,7 @@ final class NowPlaying: ObservableObject {
             artwork = nil
             loadLyrics()
         }
-        if !diff || payload.keys.contains("artworkData") {
+        if newArt {
             artwork = (info["artworkData"] as? String).flatMap { Data(base64Encoded: $0) }.flatMap(NSImage.init(data:))
         }
     }
@@ -171,6 +186,7 @@ final class NowPlaying: ObservableObject {
         guard !viaAdapter else { return } // the stream pushes changes itself
         // Only talk to a player that is already running; `tell application` would launch it.
         guard let (id, name) = Self.players.first(where: { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.0).isEmpty }) else {
+            if stream != nil { timer?.invalidate(); timer = nil; return show(artwork: true) } // the player quit: back to whatever plays
             if app != nil { app = nil; playing = false; artwork = nil; lyrics = []; trackKey = "" }
             return
         }

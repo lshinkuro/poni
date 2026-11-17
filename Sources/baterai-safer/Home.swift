@@ -21,6 +21,7 @@ struct HomeView: View {
     @ObservedObject var sys = Notch.shared.sys
     @AppStorage("morePage") private var morePage = ""
     @AppStorage("homeWidgets") private var stored = "music,calendar,todo"
+    @AppStorage("homeCalendar") private var calStyle = "both" // date, month or both
 
     static let all: [(id: String, icon: String, title: String, tab: NTab)] = [
         ("music", "music.note", "Musik", .music), ("calendar", "calendar", "Kalender", .agenda),
@@ -50,6 +51,14 @@ struct HomeView: View {
                     ForEach(Self.all.filter { !Lite.cutTabs.contains($0.tab) }, id: \.id) { w in
                         Button { toggle(w.id) } label: { Label(tr(w.title), systemImage: chosen.contains(w.id) ? "checkmark" : w.icon) }
                     }
+                    if chosen.contains("calendar") {
+                        Divider()
+                        Picker("Tampilan Kalender", selection: $calStyle) {
+                            Text("Tanggal dan acara").tag("date")
+                            Text("Kalender bulan").tag("month")
+                            Text("Keduanya").tag("both")
+                        }
+                    }
                 } label: { Label("Atur", systemImage: "slider.horizontal.3") }
                     .menuStyle(.borderlessButton).fixedSize().font(.system(size: 11, weight: .semibold))
                     .tip("Pilih isi Home")
@@ -64,7 +73,7 @@ struct HomeView: View {
                     // More than fit: the fifth card peeks in so it's clear the row scrolls.
                     GeometryReader { geo in
                         ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 10) { ForEach(shown, id: \.id) { widget($0, width: $0.id == "calendar" ? 250 : 165) } } // room for the month
+                            HStack(spacing: 10) { ForEach(shown, id: \.id) { widget($0, width: $0.id == "calendar" && calStyle == "both" ? 250 : 165) } } // room for the month
                                 .coordinateSpace(name: "homeCards")
                                 .frame(height: geo.size.height)
                         }
@@ -211,7 +220,9 @@ struct HomeView: View {
             Placeholder(icon: "calendar.badge.exclamationmark", title: "Izin Kalender ditolak")
         } else {
             // Like the medium Calendar widget: the month beside today's events. Four equal cards are too narrow for it.
-            if shown.count != 4 {
+            if calStyle == "month" {
+                miniMonth.frame(maxWidth: .infinity)
+            } else if calStyle == "both", shown.count != 4 {
                 HStack(alignment: .top, spacing: 8) { agenda(compact: true); miniMonth }
             } else {
                 agenda(compact: false)
@@ -314,8 +325,18 @@ struct HomeView: View {
     }
 
     var focus: some View {
-        VStack(spacing: 8) {
-            Ring(value: f.remaining / f.total, color: f.onBreak ? Palette.green : Palette.accent, label: f.clock, size: 76, line: 7)
+        let task = f.intention.trimmingCharacters(in: .whitespaces)
+        return VStack(spacing: 8) {
+            // What this session is for: typed here before starting, read-only while it runs (same as the Fokus tab).
+            if f.onBreak {
+                Text("Istirahat").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.green)
+            } else if f.running {
+                Text(task.isEmpty ? tr("Sesi fokus") : task).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+            } else {
+                TextField("Mau mengerjakan apa?", text: $f.intention).textFieldStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold)).multilineTextAlignment(.center)
+            }
+            Ring(value: f.remaining / f.total, color: f.onBreak ? Palette.green : Palette.accent, label: f.clock, size: 64, line: 6)
             NButton(icon: f.running ? "pause.fill" : "play.fill", title: f.running ? "Jeda" : "Mulai", tint: Palette.accent, prominent: true) { f.toggle() }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
