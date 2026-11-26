@@ -1,9 +1,9 @@
 import AppKit
 
-/// Paths after `b/` in `diff --git a/x b/y` lines.
+/// Paths after `b/` in `diff --git a/x b/y` lines (Bitbucket Server writes `src://x dst://y`).
 func changedFiles(_ diff: String) -> [String] {
     diff.split(separator: "\n").compactMap { l in
-        guard l.hasPrefix("diff --git "), let r = l.range(of: " b/", options: .backwards) else { return nil }
+        guard l.hasPrefix("diff --git "), let r = l.range(of: " dst://", options: .backwards) ?? l.range(of: " b/", options: .backwards) else { return nil }
         return String(l[r.upperBound...])
     }
 }

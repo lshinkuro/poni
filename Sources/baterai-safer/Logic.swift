@@ -180,6 +180,15 @@ func selfTest() {
     assert(Bitbucket.repoPath(bb[0]) == "/rest/api/1.0/projects/MOB/repos/mobile-app/pull-requests/42")
     assert(checkSummary(["SUCCESSFUL"]) == "pass" && checkSummary(["SUCCESSFUL", "FAILED"]) == "fail" && checkSummary(["INPROGRESS"]) == "pending", "bitbucket checks")
     assert(diffStats("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1,2 @@\n-old\n+new\n+more\ndiff --git a/y b/y\n") == (2, 1, 2), "diff stats")
+    let bbDiff = "diff --git src://app/b.kt dst://app/b.kt\n--- src://app/b.kt\n+++ dst://app/b.kt\n@@ -5,2 +5,3 @@\n val a = 1\n+val b = 2\n }"
+    assert(changedFiles(bbDiff) == ["app/b.kt"], "bitbucket diff paths")
+    let walked = diffLines(bbDiff)
+    assert(walked.lines == ["app/b.kt": [5: false, 6: true, 7: false]] && walked.numbered.contains("6\t+val b = 2"), "diff line numbers")
+    let lc = lineComments("**Ringkasan** — ok\n**Komentar di diff**\n- `b.kt:6` — [penting] cek\n- app/b.kt:99 — di luar diff\n**Kesimpulan** — ok", lines: walked.lines)
+    assert(lc.comments == [LineComment(path: "app/b.kt", line: 6, text: "[penting] cek", added: true)]
+           && lc.body == "**Ringkasan** — ok\n**Komentar di diff**\n- app/b.kt:99 — di luar diff\n**Kesimpulan** — ok", "line comments")
+    let big = (1...4).map { "diff --git a/f\($0) b/f\($0)\n" + String(repeating: "+x\n", count: 8_000) }.joined(separator: "\n")
+    assert(diffChunks(big).map(changedFiles) == [["f1", "f2"], ["f3", "f4"]] && diffChunks(big).joined(separator: "\n") == big, "diff chunks")
     assert(cleanCommitMessage("```\nAdd login\n\n- detail\n```") == "Add login\n\n- detail", "commit msg fences")
     assert(cleanCommitMessage("\"Fix bug\"") == "Fix bug", "commit msg quotes")
     let du = parseDu("100\t/h/a\n300\t/h/b c\n400\t/h\n", parent: "/h")

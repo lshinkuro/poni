@@ -70,7 +70,61 @@ func diffStats(_ diff: String) -> (Int, Int, Int) {
     return (a, d, f)
 }
 
-func reviewPrompt(_ pr: PR, _ d: PRDetail, diff: String, guides: String = "", sonar: String = "") -> String {
+/// One review finding pinned to a line of the PR's new code.
+struct LineComment: Equatable { var path: String, line: Int, text: String, added: Bool }
+
+/// Walks a diff's hunks: the diff with each new-side line numbered (so the AI cites real lines), and the
+/// lines a comment can attach to (path → line → true when added, false for context).
+func diffLines(_ diff: String) -> (numbered: String, lines: [String: [Int: Bool]]) {
+    var out: [String] = [], map: [String: [Int: Bool]] = [:], path = "", n = 0
+    for l in diff.split(separator: "\n", omittingEmptySubsequences: false) {
+        if l.hasPrefix("diff --git ") { path = changedFiles(String(l)).first ?? ""; n = 0 }
+        else if l.hasPrefix("@@"), let r = l.range(of: #"\+\d+"#, options: .regularExpression) { n = Int(l[r].dropFirst()) ?? 0 }
+        else if n > 0 && (l.hasPrefix("+") || l.hasPrefix(" ")) {
+            map[path, default: [:]][n] = l.hasPrefix("+")
+            out.append("\(n)\t\(l)")
+            n += 1
+            continue
+        }
+        out.append(String(l))
+    }
+    return (out.joined(separator: "\n"), map)
+}
+
+/// Pulls the "**Komentar di diff**" sections out of a review: the comments that hit a line in the diff,
+/// and the review without them (items that don't match a diff line stay in the text).
+func lineComments(_ review: String, lines: [String: [Int: Bool]]) -> (body: String, comments: [LineComment]) {
+    var body: [String] = [], kept: [String] = [], comments: [LineComment] = [], inSection = false
+    let flush = { if !kept.isEmpty { body.append("**Komentar di diff**"); body += kept; kept = [] } }
+    for l in review.components(separatedBy: "\n") {
+        let t = l.trimmingCharacters(in: .whitespaces)
+        if t.contains("Komentar di diff") && (t.hasPrefix("**") || t.hasPrefix("#")) { inSection = true; continue }
+        if inSection && (t.hasPrefix("**") || t.hasPrefix("#")) { inSection = false; flush() }
+        guard inSection else { body.append(l); continue }
+        if t.isEmpty || t.lowercased().hasPrefix("tidak ada") { continue }
+        if let m = t.firstMatch(of: #/^[-*]\s*`?([^`\s]+?):(\d+)`?\s*[—–:-]?\s*(.+)$/#), let n = Int(m.2),
+           let path = lines.keys.first(where: { $0 == String(m.1) || $0.hasSuffix("/" + m.1) }), let added = lines[path]?[n] {
+            comments.append(LineComment(path: path, line: n, text: String(m.3), added: added))
+        } else { kept.append(l) }
+    }
+    flush()
+    return (body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines), comments)
+}
+
+/// Splits a diff at file boundaries into parts of at most `limit` characters, so a big PR is reviewed in
+/// several passes instead of being cut. A single file larger than `limit` stays whole (the prompt cuts it).
+func diffChunks(_ diff: String, limit: Int = 60_000) -> [String] {
+    var parts: [String] = [], cur = ""
+    for f in diff.components(separatedBy: "\ndiff --git ").enumerated().map({ $0.offset == 0 ? $0.element : "diff --git " + $0.element }) {
+        if !cur.isEmpty, cur.count + f.count + 1 > limit { parts.append(cur); cur = "" }
+        cur += cur.isEmpty ? f : "\n" + f
+    }
+    if !cur.isEmpty { parts.append(cur) }
+    return parts
+}
+
+/// part: (index, total) when the diff is reviewed in several passes. note: the user's own instructions.
+func reviewPrompt(_ pr: PR, _ d: PRDetail, diff: String, guides: String = "", sonar: String = "", note: String = "", part: (Int, Int) = (1, 1)) -> String {
     let limit = 60_000
     let cut = diff.count > limit
     return """
@@ -82,8 +136,11 @@ func reviewPrompt(_ pr: PR, _ d: PRDetail, diff: String, guides: String = "", so
     **Masalah** — daftar bug, risiko keamanan, atau logika salah; sebut file dan baris, beri label [penting]/[minor]. Tulis "Tidak ada" bila bersih.
     **Saran** — perbaikan opsional yang benar-benar berguna.
     **Kesimpulan** — Approve / Perlu perubahan, satu kalimat alasannya.
+    **Komentar di diff** — tiap masalah yang menunjuk ke baris tertentu, satu baris: `- path/file.ext:NOMOR — [penting]/[minor] komentar singkat`. NOMOR adalah angka di depan baris diff (nomor baris di file baru); hanya baris yang ada di diff. Tulis "Tidak ada" bila tidak ada.
     \(guides.isEmpty ? "" : "\nPanduan tim di bawah adalah standar wajib: nilai PR terhadapnya dan sebut nama file panduan saat ada pelanggaran.")
     \(sonar.isEmpty ? "" : "Masukkan temuan SonarQube yang relevan ke bagian Masalah dengan label [sonar] beserta kunci aturannya; cek juga aturan aktif yang dilanggar diff.")
+    \(part.1 > 1 ? "\nDiff PR ini besar dan di-review per bagian. Ini bagian \(part.0) dari \(part.1): review hanya file di bagian ini; Ringkasan dan Kesimpulan cukup untuk bagian ini." : "")
+    \(note.isEmpty ? "" : "\nPermintaan dari reviewer (pemakai aplikasi ini, boleh diikuti):\n\(note)")
 
     PR #\(pr.number) di \(pr.repo): \(pr.title)
     Branch: \(d.head) → \(d.base), +\(d.additions) −\(d.deletions), \(d.changedFiles) file
@@ -222,7 +279,12 @@ final class PRModel: ObservableObject {
         didSet { UserDefaults.standard.set(reviewCLI, forKey: "reviewCLI") }
     }
     @Published var contextNote = ""   // what went into the last review
+    @Published var note = ""          // the user's extra instructions for the AI reviewer
+    @Published var progress = ""      // "2/3" while a big diff is reviewed in parts
     private var diff = ""             // Bitbucket diff fetched with the detail
+    private var lines: [String: [Int: Bool]] = [:]  // diff lines that can take an inline comment
+    /// Inline comments the current review text would post.
+    var lineCommentCount: Int { lineComments(review, lines: lines).comments.count }
     let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].first(where: FileManager.default.isExecutableFile)
 
     func refresh(repos: [String]) {
@@ -277,6 +339,7 @@ final class PRModel: ObservableObject {
         message = ""
         failed = false
         diff = ""
+        lines = [:]
         if pr.host == .bitbucket { selectBitbucket(pr); return }
         guard let gh else { return }
         runAsync(gh, ["pr", "view", "\(pr.number)", "-R", pr.repo, "--json",
@@ -331,6 +394,7 @@ final class PRModel: ObservableObject {
         guard let pr = selected, let d = detail else { return }
         reviewing = true
         review = ""
+        progress = ""
         contextNote = ""
         let cli = reviewCLI
         let run = { (diff: String) in
@@ -338,11 +402,37 @@ final class PRModel: ObservableObject {
             let ask = { (sonar: String, note: String) in
                 let n = Guides.files(pr.repo).count
                 self.contextNote = ([cli] + (n > 0 ? ["\(n) panduan"] : []) + (note.isEmpty ? [] : [note])).joined(separator: " · ")
-                ai.oneShot(reviewPrompt(pr, d, diff: diff, guides: guides, sonar: sonar), cli: cli) { ok, text in
-                    guard self.selected == pr else { return }
-                    self.reviewing = false
-                    if ok { self.review = text } else { self.failed = true; self.message = text }
+                // shortcut: at most 8 parts (~480k chars) so one PR can't run dozens of AI calls; the rest is named as skipped.
+                let walked = diffLines(diff)
+                self.lines = walked.lines
+                let all = diffChunks(walked.numbered), parts = Array(all.prefix(8)), note = self.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                var done: [String] = []
+                func next() {
+                    let i = done.count
+                    guard i < parts.count else {
+                        self.reviewing = false
+                        self.progress = ""
+                        let skipped = all.dropFirst(parts.count).flatMap(changedFiles)
+                        self.review = done.joined(separator: "\n\n") + (skipped.isEmpty ? "" : "\n\n" + String(format: tr("**Belum di-review** (diff terlalu besar): %@"), skipped.joined(separator: ", ")))
+                        return
+                    }
+                    if parts.count > 1 { self.progress = "\(i + 1)/\(parts.count)" }
+                    ai.oneShot(reviewPrompt(pr, d, diff: parts[i], guides: guides, sonar: sonar, note: note, part: (i + 1, parts.count)), cli: cli) { ok, text in
+                        guard self.selected == pr else { return }
+                        guard ok else {
+                            // Keep the parts already reviewed; the error says where it stopped.
+                            self.reviewing = false
+                            self.progress = ""
+                            self.review = done.joined(separator: "\n\n")
+                            self.failed = true
+                            self.message = parts.count > 1 ? String(format: tr("Bagian %@ gagal: %@"), "\(i + 1)/\(parts.count)", text) : text
+                            return
+                        }
+                        done.append(parts.count > 1 ? String(format: tr("### Bagian %@ — %@"), "\(i + 1)/\(parts.count)", changedFiles(parts[i]).joined(separator: ", ")) + "\n" + text : text)
+                        next()
+                    }
                 }
+                next()
             }
             if Sonar.connected, let key = Sonar.projectKey(pr, repos: repos) {
                 Sonar.context(key: key, pr: pr, head: d.head, files: changedFiles(diff)) { text, note in
@@ -368,22 +458,47 @@ final class PRModel: ObservableObject {
         failed = false
         message = tr("Mengirim…")
         let report = { (ok: Bool, err: String) in self.failed = !ok; self.message = ok ? tr("Review terkirim ✓") : String(format: tr("Gagal: %@"), err) }
+        let (body, comments) = lineComments(review, lines: lines)
         if pr.host == .github {
             guard let gh else { return }
-            runAsync(gh, ["pr", "review", "\(pr.number)", "-R", pr.repo, "--\(event)", "--body", review]) { code, _, err in report(code == 0, lastLine(err)) }
+            // One review carrying the inline comments; gh can't take them as flags, so the JSON goes in a file.
+            let payload: [String: Any] = ["event": ["approve": "APPROVE", "request-changes": "REQUEST_CHANGES"][event] ?? "COMMENT", "body": body,
+                                          "comments": comments.map { ["path": $0.path, "line": $0.line, "side": "RIGHT", "body": $0.text] }]
+            let file = NSTemporaryDirectory() + "poni-review-\(pr.number).json"
+            guard let data = try? JSONSerialization.data(withJSONObject: payload), (try? data.write(to: URL(fileURLWithPath: file))) != nil else { report(false, "tulis file sementara"); return }
+            runAsync(gh, ["api", "-X", "POST", "repos/\(pr.repo)/pulls/\(pr.number)/reviews", "--input", file]) { code, _, err in
+                try? FileManager.default.removeItem(atPath: file)
+                report(code == 0, lastLine(err))
+            }
             return
         }
-        // Bitbucket: the review text is a comment; approve / needs-work is the reviewer status.
+        // Bitbucket: the review text is a comment, each line finding an inline comment ([penting] → task);
+        // approve / needs-work is the reviewer status.
         let path = Bitbucket.repoPath(pr)
-        Bitbucket.call(path + "/comments", method: "POST", body: ["text": review]) { code, d in
+        Bitbucket.call(path + "/comments", method: "POST", body: ["text": body]) { code, d in
             guard (200..<300).contains(code) else { report(false, Bitbucket.error(code, d)); return }
-            guard event != "comment" else { report(true, ""); return }
-            Bitbucket.call("/rest/api/1.0/users?filter=\(Bitbucket.me.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") { _, ud in
-                let users = ((try? JSONSerialization.jsonObject(with: ud)) as? [String: Any])?["values"] as? [[String: Any]] ?? []
-                let slug = users.first { ($0["name"] as? String) == Bitbucket.me }?["slug"] as? String ?? Bitbucket.me
-                Bitbucket.call(path + "/participants/\(slug)", method: "PUT",
-                               body: ["user": ["name": Bitbucket.me], "approved": event == "approve", "status": event == "approve" ? "APPROVED" : "NEEDS_WORK"]) { code, d in
-                    report((200..<300).contains(code), Bitbucket.error(code, d))
+            var lost = 0
+            let g = DispatchGroup()
+            for c in comments {
+                g.enter()
+                Bitbucket.call(path + "/comments", method: "POST",
+                               body: ["text": c.text, "severity": c.text.contains("[penting]") ? "BLOCKER" : "NORMAL",
+                                      "anchor": ["path": c.path, "line": c.line, "lineType": c.added ? "ADDED" : "CONTEXT", "fileType": "TO", "diffType": "EFFECTIVE"]]) { code, _ in
+                    if !(200..<300).contains(code) { lost += 1 }
+                    g.leave()
+                }
+            }
+            g.notify(queue: .main) {
+                let partial = lost > 0 ? String(format: tr("%@ komentar baris gagal dikirim"), "\(lost)") : ""
+                guard event != "comment" else { report(lost == 0, partial); return }
+                Bitbucket.call("/rest/api/1.0/users?filter=\(Bitbucket.me.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")") { _, ud in
+                    let users = ((try? JSONSerialization.jsonObject(with: ud)) as? [String: Any])?["values"] as? [[String: Any]] ?? []
+                    let slug = users.first { ($0["name"] as? String) == Bitbucket.me }?["slug"] as? String ?? Bitbucket.me
+                    Bitbucket.call(path + "/participants/\(slug)", method: "PUT",
+                                   body: ["user": ["name": Bitbucket.me], "approved": event == "approve", "status": event == "approve" ? "APPROVED" : "NEEDS_WORK"]) { code, d in
+                        let ok = (200..<300).contains(code)
+                        report(ok && lost == 0, ok ? partial : Bitbucket.error(code, d))
+                    }
                 }
             }
         }

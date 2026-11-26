@@ -1812,12 +1812,15 @@ struct PRPane: View {
         if pr.reviewing {
             VStack(spacing: 8) {
                 ProgressView().controlSize(.small)
-                Text("AI sedang membaca diff…").font(.system(size: 11)).foregroundStyle(.gray)
+                Text(pr.progress.isEmpty ? tr("AI sedang membaca diff…") : String(format: tr("AI sedang membaca diff… bagian %@"), pr.progress)).font(.system(size: 11)).foregroundStyle(.gray)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if pr.review.isEmpty {
             VStack(spacing: 8) {
                 contextBar(p)
+                TextField("Catatan untuk reviewer (opsional), mis. fokus ke keamanan", text: $pr.note, axis: .vertical)
+                    .textFieldStyle(.plain).font(.system(size: 11)).lineLimit(1...3)
+                    .padding(6).background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 NButton(icon: "sparkles", title: "Review dengan \(pr.reviewCLI)", tint: Palette.accent, prominent: true) { pr.aiReview(ai, repos: repos) }
                 Text(pr.reviewCLI == "Claude" ? "Diff dikirim ke Claude tanpa akses tool apa pun" : "Kiro tidak diberi izin tool, tapi isolasinya belum dicek seketat Claude")
                     .font(.system(size: 10)).foregroundStyle(.gray)
@@ -1910,7 +1913,9 @@ struct PRPane: View {
     }
 
     func send(_ p: PR, _ event: String, _ label: String) {
-        if confirm("Kirim \(label) ke PR #\(p.number)?", "Review ini akan terlihat publik di \(p.repo) atas nama akun GitHub-mu.", "Kirim") { pr.post(event) }
+        let n = pr.lineCommentCount
+        let inline = n == 0 ? "" : "\n" + String(format: tr(p.host == .bitbucket ? "Plus %@ komentar di baris diff ([penting] jadi task)." : "Plus %@ komentar di baris diff."), "\(n)")
+        if confirm("Kirim \(label) ke PR #\(p.number)?", String(format: tr("Review ini akan terlihat publik di %@ atas nama akun GitHub-mu."), p.repo) + inline, "Kirim") { pr.post(event) }
     }
 }
 

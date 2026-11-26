@@ -415,6 +415,14 @@
 "Pilih PR" = "Pick a PR";
 "Lalu minta AI me-review diff-nya" = "Then have AI review its diff";
 "AI sedang membaca diff…" = "AI is reading the diff…";
+"AI sedang membaca diff… bagian %@" = "AI is reading the diff… part %@";
+"Catatan untuk reviewer (opsional), mis. fokus ke keamanan" = "Note for the reviewer (optional), e.g. focus on security";
+"**Belum di-review** (diff terlalu besar): %@" = "**Not reviewed** (diff too large): %@";
+"Bagian %@ gagal: %@" = "Part %@ failed: %@";
+"### Bagian %@ — %@" = "### Part %@ — %@";
+"%@ komentar baris gagal dikirim" = "%@ line comments failed to send";
+"Plus %@ komentar di baris diff ([penting] jadi task)." = "Plus %@ comments on diff lines ([penting] become tasks).";
+"Plus %@ komentar di baris diff." = "Plus %@ comments on diff lines.";
 "Review dengan %@" = "Review with %@";
 "Review dengan %lld" = "Review with %lld";
 "Diff dikirim ke Claude tanpa akses tool apa pun" = "The diff goes to Claude without any tool access";
